@@ -1,0 +1,18 @@
+- [ ] Analysis & Planning <!-- id: 0 -->
+    - [x] Analyze existing backend capabilties <!-- id: 1 -->
+    - [x] Design Frontend Architecture (Asset Mgmt System) <!-- id: 2 -->
+    - [x] Create Implementation Plan <!-- id: 3 -->
+- [ ] Backend Refinement <!-- id: 4 -->
+    - [x] Implement/Verify Logout Endpoint (`auth-service`) <!-- id: 5 -->
+    - [x] Restore/Implement Public/Private Asset Logic (`asset-service`) <!-- id: 6 -->
+    - [x] Verify Admin Endpoints <!-- id: 7 -->
+- [/] Frontend Renovation <!-- id: 8 -->
+    - [/] overhaul UI Design (Unique Dashboard Theme) <!-- id: 9 -->
+    - [x] Implement AuthProvider & Secure Logout <!-- id: 10 -->
+    - [x] Build Dashboard & Asset Listing (Public/Private) <!-- id: 11 -->
+    - [x] Implement Admin & Profile Pages <!-- id: 12 -->
+- [ ] Integration & QA <!-- id: 13 -->
+    - [x] Fix "Folder Creation" Bug (Verified in Backend) <!-- id: 14 -->
+    - [x] Fix Login 500 Internal Server Error (Duplicate Key in RefreshToken) <!-- id: 16 -->
+    - [x] Implement 'Contact Admin' as mailto link <!-- id: 17 -->
+    - [x] Verify End-to-End Flows <!-- id: 15 -->

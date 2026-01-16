@@ -1,0 +1,7 @@
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
+/* 
+  If you need to add custom utilities or override theme values, 
+  refer to the Tailwind CSS v4 documentation for the new configuration directive. 
+  The @tailwind directives are deprecated in v4.
+*/

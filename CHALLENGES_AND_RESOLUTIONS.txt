@@ -1,0 +1,344 @@
+# Challenges and Resolutions - Microservices Project
+
+This document summarizes all the errors and challenges encountered during the development and debugging of the microservices project, along with their resolutions.
+
+---
+
+## 1. Asset Upload 403 Forbidden Error
+
+### Problem
+Users received `403 Forbidden` when attempting to upload assets through `asset-service`.
+
+### Root Cause
+- Stale Docker image in Minikube cluster
+- JWT secret mismatch between `auth-service` and `asset-service`
+- Slow pod startup causing requests to fail during initialization
+
+### Resolution
+1. Synced JWT secrets in `application.properties` for both services
+2. Removed unnecessary Eureka and Config Server dependencies from `pom.xml`
+3. Created `Dockerfile.simple` to use pre-built JARs (avoiding Maven network issues inside Docker)
+4. Force-rebuilt images with `mvn clean package -DskipTests`
+5. Updated Kubernetes deployments with new image versions
+
+---
+
+## 2. Asset Download 403 Forbidden Error
+
+### Problem
+Regular users and admins received `403 Forbidden` when downloading assets via `GET /api/asset/download/{id}`.
+
+### Root Cause (Admin)
+- Role name mismatch: Backend expected `ROLE_ADMIN` but JWT token contained `ADMIN`
+
+### Root Cause (User)
+- Physical files were missing from pod filesystem (pods are ephemeral)
+- Spring redirected to `/error` endpoint which required authentication, showing 403 instead of 404
+
+### Resolution
+1. Updated `AssetServiceImp.java` to accept both "ADMIN" and "ROLE_ADMIN":
+   ```java
+   boolean isAdmin = roles.stream().anyMatch(r -> r.equals("ROLE_ADMIN") || r.equals("ADMIN"));
+   ```
+2. Added debug logging to trace access control decisions
+3. For missing files: Users need to re-upload files after pod restarts (or use PersistentVolume for permanent storage)
+
+---
+
+## 3. Visibility Toggle Button Not Showing in My Assets
+
+### Problem
+The Public/Private visibility toggle icon was not appearing next to assets in the "My Assets" view.
+
+### Root Cause
+Ownership comparison was comparing mismatched data types:
+- `asset.owner` contained numeric ID (e.g., `"6"`)
+- `user?.username` was a string (e.g., `"admin"`)
+- The comparison `user?.username === asset.owner` always failed
+
+### Resolution
+1. Added `id` field to `UserProfile` interface
+2. Added `uploadedById` field to `Asset` interface
+3. Updated login handler to store user ID from API response
+4. Changed ownership check to compare IDs:
+   ```typescript
+   {(user?.id === asset.uploadedById || user?.roles.some(r => r === 'ROLE_ADMIN' || r === 'ADMIN')) && (...)}
+   ```
+
+---
+
+## 4. Signup Request 400 Bad Request
+
+### Problem
+Users received `400 Bad Request` when submitting signup requests.
+
+### Root Cause
+1. **Primary**: Username or email already existed in database or pending requests
+2. **Secondary**: Missing role field in request body
+
+### Resolution
+1. The 400 error with message "Username is already taken!" is expected validation behavior
+2. Added role selector dropdown to signup form:
+   - Options: "User (Basic Access)", "Editor (Upload & Manage)"
+3. Updated API call to include role array in request body
+
+---
+
+## 5. Pending Approvals Not Showing in Admin Console
+
+### Problem
+Admin User Management panel showed mock data ("intern_dave", "contractor_bob") instead of real pending user requests.
+
+### Root Cause
+- `userRequests` state was initialized with `MOCK_REQUESTS`
+- No API call was made to fetch real requests from admin-service
+
+### Resolution
+1. Added `fetchUserRequests()` function that calls `GET /users/requests` from admin-service
+2. Changed initialization: `useState<UserRequest[]>(isDemo ? MOCK_REQUESTS : [])`
+3. Added useEffect to call `fetchUserRequests()` when admin-console view is selected
+
+---
+
+## 6. Active Users Not Showing Real Data
+
+### Problem
+Active Users section in Admin Console showed mock data instead of actual registered users.
+
+### Root Cause
+- No backend endpoint existed to list all users
+- `allUsers` state was using `MOCK_ALL_USERS`
+- No frontend function to fetch real users
+
+### Resolution (Code Added - Pending Deployment)
+1. **Auth-service**: Added `GET /api/internal/requests/users` endpoint in `AdminUserRequestController.java`
+2. **Admin-service**: 
+   - Added `getAllUsers()` method to `AuthServiceClient.java` (Feign)
+   - Added `GET /api/admin/users` endpoint in `AdminUserController.java`
+   - Added `getAllUsers()` method to `AdminUserService.java`
+3. **Frontend**: 
+   - Added `fetchAllUsers()` function
+   - Updated useEffect to call both `fetchUserRequests()` and `fetchAllUsers()` when admin-console is viewed
+
+**Status**: Backend services need to be rebuilt and redeployed for this fix to take effect.
+
+---
+
+## 7. Minikube Environment Issues
+
+### Problem
+Build commands failed with "no route to host" or "Network is unreachable" errors.
+
+### Root Cause
+- Minikube had stopped due to system restart/sleep
+- Docker context issues
+
+### Resolution
+1. Ran `minikube status` to check state
+2. Ran `minikube start` to restart the cluster
+3. Re-established Docker environment with `eval $(minikube docker-env)`
+4. Rebuilt and redeployed services
+
+---
+
+## 8. Maven Build Failure Inside Docker
+
+### Problem
+Docker build failed with "Could not resolve dependencies" during Maven package phase inside container.
+
+### Root Cause
+Network isolation inside Minikube container prevented Maven from downloading dependencies from Maven Central.
+
+### Resolution
+Created `Dockerfile.simple` that uses pre-built JAR:
+```dockerfile
+FROM eclipse-temurin:21-jdk
+WORKDIR /app
+COPY target/asset-service-0.0.1-SNAPSHOT.jar app.jar
+EXPOSE 8085
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+Build process changed to:
+1. Run `mvn package -DskipTests` locally
+2. Build Docker image with simplified Dockerfile
+
+---
+
+## 9. Zipkin Tracing Not Working - No Traces Appearing
+
+### Problem
+Zipkin UI at `http://localhost:9411` showed no services and no traces, even though:
+- Zipkin pod was running in Kubernetes
+- Environment variables (`MANAGEMENT_ZIPKIN_TRACING_ENDPOINT`, `MANAGEMENT_TRACING_SAMPLING_PROBABILITY`) were configured
+- Micrometer tracing dependencies (`micrometer-tracing-bridge-brave`, `zipkin-reporter-brave`) were present
+
+### Root Cause
+**Missing `spring-boot-starter-actuator` dependency** in both `asset-service` and `auth-service`.
+
+The actuator is required for Spring Boot to expose tracing data through Micrometer. Without it, the tracing bridges cannot connect to the application's observability infrastructure.
+
+### Resolution
+1. **Added actuator dependency to `asset-service/pom.xml`**:
+   ```xml
+   <dependency>
+       <groupId>org.springframework.boot</groupId>
+       <artifactId>spring-boot-starter-actuator</artifactId>
+   </dependency>
+   ```
+
+2. **Added actuator dependency to `auth-service/pom.xml`**:
+   ```xml
+   <dependency>
+       <groupId>org.springframework.boot</groupId>
+       <artifactId>spring-boot-starter-actuator</artifactId>
+   </dependency>
+   ```
+
+3. **Rebuilt and redeployed both services**:
+   ```bash
+   cd asset-service && mvn clean package -DskipTests
+   eval $(minikube docker-env) && docker build -f Dockerfile.simple -t asset-service:v11 .
+   kubectl set image deployment/asset-service asset-service=asset-service:v11
+   
+   cd auth-service && mvn clean package -DskipTests
+   docker build -f Dockerfile.simple -t auth-service:v4 .
+   kubectl set image deployment/auth-service auth-service=auth-service:v4
+   ```
+
+4. **Verified traces appearing in Zipkin**:
+   - Services now showing: `["asset-service", "auth-service"]`
+   - Traces visible for HTTP requests including inter-service calls
+
+### Required Dependencies for Zipkin Tracing
+```xml
+<!-- Actuator - REQUIRED for tracing to work -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+
+<!-- Micrometer Tracing Bridge -->
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-tracing-bridge-brave</artifactId>
+</dependency>
+
+<!-- Zipkin Reporter -->
+<dependency>
+    <groupId>io.zipkin.reporter2</groupId>
+    <artifactId>zipkin-reporter-brave</artifactId>
+</dependency>
+```
+
+### Required Configuration (application.properties)
+```properties
+# Enable tracing with 100% sampling
+management.tracing.sampling.probability=1.0
+management.zipkin.tracing.endpoint=http://zipkin:9411/api/v2/spans
+```
+
+---
+
+## 10. RabbitMQ Configuration and Setup
+
+### Status
+RabbitMQ is **running and configured** in the Kubernetes cluster but not actively used for messaging yet.
+
+### Current Configuration
+
+**Kubernetes Deployment**: RabbitMQ pod is deployed and accessible:
+- Management Console: `http://localhost:15672` (guest/guest)
+- AMQP Port: `5672`
+
+**application.properties** (both services):
+```properties
+spring.rabbitmq.host=rabbitmq
+spring.rabbitmq.port=5672
+spring.rabbitmq.username=guest
+spring.rabbitmq.password=guest
+```
+
+**pom.xml dependency** (added to both services):
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-amqp</artifactId>
+</dependency>
+```
+
+### How to Use RabbitMQ
+To implement message publishing/consuming, you would need to:
+
+1. **Create a configuration class**:
+   ```java
+   @Configuration
+   public class RabbitConfig {
+       @Bean
+       public Queue assetQueue() {
+           return new Queue("asset-events", true);
+       }
+   }
+   ```
+
+2. **Publish messages**:
+   ```java
+   @Autowired
+   private RabbitTemplate rabbitTemplate;
+   
+   public void publishAssetEvent(String message) {
+       rabbitTemplate.convertAndSend("asset-events", message);
+   }
+   ```
+
+3. **Consume messages**:
+   ```java
+   @RabbitListener(queues = "asset-events")
+   public void handleAssetEvent(String message) {
+       // Process the message
+   }
+   ```
+
+---
+
+## Summary of Key Learnings
+
+| Issue | Category | Fix Type |
+|-------|----------|----------|
+| 403 on Upload | Authentication | JWT secret sync |
+| 403 on Download | Authorization | Role name tolerance |
+| Missing Buttons | Frontend Logic | Data type mapping |
+| 400 on Signup | Validation | Error is expected behavior |
+| Mock Data Display | Missing Feature | Added API integration |
+| Build Failures | Infrastructure | Simplified Docker build |
+| Minikube Issues | Environment | Cluster restart |
+| **Zipkin No Traces** | **Tracing** | **Added spring-boot-starter-actuator** |
+| **RabbitMQ Setup** | **Messaging** | **Added AMQP dependency & config** |
+
+---
+
+## Files Modified
+
+### Backend
+- `auth-service/src/main/java/com/.../controller/AdminUserRequestController.java`
+- `auth-service/src/main/java/com/.../security/WebSecurityConfig.java`
+- `auth-service/src/main/resources/application.properties` (Zipkin config added)
+- `auth-service/pom.xml` (actuator + AMQP dependencies)
+- `asset-service/src/main/java/com/.../service/assetserviceimp.java`
+- `asset-service/Dockerfile.simple` (new)
+- `asset-service/pom.xml` (actuator + AMQP dependencies)
+- `admin-service/src/main/java/com/.../feign/AuthServiceClient.java`
+- `admin-service/src/main/java/com/.../controller/AdminUserController.java`
+- `admin-service/src/main/java/com/.../service/AdminUserService.java`
+
+### Frontend
+- `asset-manager/frontend-app/src/App.tsx`
+  - Added user ID tracking on login
+  - Fixed ownership checks
+  - Added role selector to signup form
+  - Added `fetchUserRequests()` function
+  - Added `fetchAllUsers()` function
+
+---
+
+*Document updated: January 13, 2026*
+

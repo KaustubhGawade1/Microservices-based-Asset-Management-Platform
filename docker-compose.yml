@@ -1,0 +1,113 @@
+services:
+  db:
+    image: postgres:14-alpine
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - springnet
+
+  config-service:
+    build: ./config-server
+    container_name: config-server
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+    networks:
+      - springnet
+
+  eureka:
+    build: ./service-reg
+    container_name: eureka
+    ports:
+      - "8761:8761"
+    depends_on:
+      - config-service
+    networks:
+      - springnet
+
+  gateway-service:
+    build: ./gateway-service
+    container_name: gateway-service
+    ports:
+      - "8090:8090"
+    depends_on:
+      - eureka
+      - auth-service
+      - asset-service
+      - admin-service
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://eureka:8761/eureka/
+      - MANAGEMENT_ZIPKIN_TRACING_ENDPOINT=http://zipkin:9411/api/v2/spans
+    networks:
+      - springnet
+
+  admin-service:
+    build: ./admin-service
+    container_name: admin-service
+    ports:
+      - "8089:8089"
+    depends_on:
+      - db
+      - eureka
+    networks:
+      - springnet
+
+  asset-service:
+    build: ./asset-service
+    container_name: asset-service
+    ports:
+      - "8085:8085"
+    depends_on:
+      - db
+      - eureka
+    networks:
+      - springnet
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - springnet
+
+  auth-service:
+    build: ./auth-service
+    container_name: auth-service
+    ports:
+      - "8081:8081"
+    depends_on:
+      - db
+      - eureka
+    networks:
+      - springnet
+
+  zipkin:
+    image: openzipkin/zipkin:latest
+    container_name: zipkin
+    ports:
+      - "9411:9411"
+    depends_on:
+      - db
+    networks:
+      - springnet
+
+volumes:
+  postgres_data:
+
+
+networks:
+  springnet:
+    driver: bridge
