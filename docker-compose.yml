@@ -45,6 +45,8 @@ services:
       - auth-service
       - asset-service
       - admin-service
+      - ai-agent-service
+      - mcp-service
     environment:
       - SPRING_PROFILES_ACTIVE=docker
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://eureka:8761/eureka/
@@ -68,9 +70,63 @@ services:
     container_name: asset-service
     ports:
       - "8085:8085"
+    environment:
+      - UPLOAD_PATH=/data/uploads
     depends_on:
       - db
       - eureka
+    volumes:
+      - asset_uploads:/data/uploads
+    networks:
+      - springnet
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - springnet
+
+  ollama-model-loader:
+    image: ollama/ollama:latest
+    container_name: ollama-model-loader
+    depends_on:
+      - ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep 5 && ollama pull llama3.2:3b"]
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    networks:
+      - springnet
+
+  ai-agent-service:
+    build: ./ai-agent-service
+    container_name: ai-agent-service
+    ports:
+      - "8091:8091"
+    depends_on:
+      ollama-model-loader:
+        condition: service_completed_successfully
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2:3b
+      - MCP_SERVICE_URL=http://mcp-service:8092
+      - RABBITMQ_HOST=rabbitmq
+    networks:
+      - springnet
+
+  mcp-service:
+    build: ./mcp-service
+    container_name: mcp-service
+    ports:
+      - "8092:8092"
+    depends_on:
+      - asset-service
+    environment:
+      - ASSET_SERVICE_URL=http://asset-service:8085
     networks:
       - springnet
 
@@ -106,6 +162,8 @@ services:
 
 volumes:
   postgres_data:
+  asset_uploads:
+  ollama_models:
 
 
 networks:

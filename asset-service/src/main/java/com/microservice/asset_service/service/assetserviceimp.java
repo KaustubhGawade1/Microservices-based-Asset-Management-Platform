@@ -4,6 +4,7 @@ import com.microservice.asset_service.Payload.UsersDto;
 import com.microservice.asset_service.model.asset;
 import com.microservice.asset_service.payload.AssetDto;
 import com.microservice.asset_service.repository.AssetRepository;
+import com.microservice.asset_service.storage.AssetStorage;
 
 import org.modelmapper.ModelMapper;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,26 +12,19 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 //import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 //import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.List;
-// import java.util.Optional; // Removed unused
-import java.util.UUID;
+import java.util.Map;
 
 @Service
 public class assetserviceimp implements assetservice {
-
-    @Value("${upload.path}")
-    private String uploadDir;
 
     @Autowired
     public AssetRepository assetrepo;
@@ -42,6 +36,12 @@ public class assetserviceimp implements assetservice {
     private String authServiceUrl;
     @Autowired
     private RestTemplate restTemplate;
+
+    @Autowired
+    private AssetStorage assetStorage;
+
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
 
     // public asset storeFile(MultipartFile file) throws IOException {
     //
@@ -87,12 +87,7 @@ public class assetserviceimp implements assetservice {
 
         Long userId = ((Number) user.get("id")).longValue();
 
-        // Save file physically
-        File dir = new File(uploadDir);
-        if (!dir.exists())
-            dir.mkdirs();
-        String filename = UUID.randomUUID() + "_" + file.getOriginalFilename();
-        Path filepath = Paths.get(uploadDir, filename);
+        // Save file through the storage abstraction
 
         // Ensure parent exists and is a folder if parentId is provided
         if (parentId != null) {
@@ -103,20 +98,35 @@ public class assetserviceimp implements assetservice {
             }
         }
 
-        Files.copy(file.getInputStream(), filepath);
+        String objectKey = assetStorage.store(file);
 
         // Save metadata
         asset newAsset = new asset();
         newAsset.setFilename(file.getOriginalFilename());
         newAsset.setContentType(file.getContentType());
         newAsset.setSize(file.getSize());
-        newAsset.setFilePath(filepath.toString());
+        newAsset.setFilePath(objectKey);
         newAsset.setUploadedAt(LocalDateTime.now());
         newAsset.setUploadedById(userId);
         newAsset.setParentId(parentId);
         newAsset.setPublic(isPublic);
 
-        return assetrepo.save(newAsset);
+        asset savedAsset = assetrepo.save(newAsset);
+
+        rabbitTemplate.convertAndSend(
+                "asset.events",
+                "asset.uploaded",
+                Map.of(
+                        "assetId", savedAsset.getAsset_id(),
+                        "filename", savedAsset.getFilename(),
+                        "contentType", savedAsset.getContentType(),
+                        "size", savedAsset.getSize(),
+                        "objectKey", savedAsset.getFilePath(),
+                        "uploadedById", savedAsset.getUploadedById()
+                )
+        );
+
+        return savedAsset;
     }
 
     @Override
@@ -218,12 +228,12 @@ public class assetserviceimp implements assetservice {
     public String deleteAsset(Long id) {
         // Permanent delete
         asset existing = assetrepo.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
-        // Delete physical file if it exists
+        // Delete the stored file through the storage abstraction
         if (!existing.isFolder() && existing.getFilePath() != null) {
             try {
-                Files.deleteIfExists(Paths.get(existing.getFilePath()));
+                assetStorage.delete(existing.getFilePath());
             } catch (IOException e) {
-                // log error
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Stored file could not be deleted");
             }
         }
         assetrepo.delete(existing);
@@ -317,12 +327,9 @@ public class assetserviceimp implements assetservice {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access Denied");
         }
 
-        Path filePath = Paths.get(asset.getFilePath());
-        org.springframework.core.io.Resource resource = new org.springframework.core.io.UrlResource(filePath.toUri());
-
-        if (resource.exists() || resource.isReadable()) {
-            return resource;
-        } else {
+        try {
+            return assetStorage.load(asset.getFilePath());
+        } catch (IOException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found on server");
         }
     }

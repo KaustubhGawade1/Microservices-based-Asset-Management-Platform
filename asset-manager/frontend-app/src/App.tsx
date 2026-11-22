@@ -26,7 +26,9 @@ import {
   CreditCard,
   Mail,
   BadgeCheck,
-  Calendar
+  Calendar,
+  Bot,
+  Send
 } from 'lucide-react';
 
 // --- Types & Interfaces ---
@@ -60,16 +62,17 @@ interface Asset {
   createdAt: string;
 }
 
-type ViewState = 'my-assets' | 'public-assets' | 'admin-console' | 'profile';
+type ViewState = 'my-assets' | 'public-assets' | 'admin-console' | 'profile' | 'ai-assistant';
 type AuthState = 'login' | 'register' | 'authenticated';
 type AdminTab = 'files' | 'users';
 
 // --- Configuration ---
 
 const API_URLS = {
-  AUTH: 'http://localhost:8081/api/auth',
-  ASSET: 'http://localhost:8085/api',
-  ADMIN: 'http://localhost:8089/api/admin',
+  AUTH: import.meta.env.VITE_AUTH_API_URL || 'http://localhost:8081/api/auth',
+  ASSET: import.meta.env.VITE_ASSET_API_URL || 'http://localhost:8085/api',
+  ADMIN: import.meta.env.VITE_ADMIN_API_URL || 'http://localhost:8089/api/admin',
+  AI: import.meta.env.VITE_AI_API_URL || 'http://localhost:8090/api/ai',
 };
 
 // --- Mock Data (For Demo Mode) ---
@@ -106,7 +109,7 @@ const MOCK_ASSETS: Asset[] = [
 const useApi = (isDemo: boolean, logout: () => void) => {
   const [tokens, setTokens] = useState({ access: '', refresh: '' });
 
-  const apiCall = useCallback(async (endpoint: string, options: RequestInit = {}, service: 'AUTH' | 'ASSET' | 'ADMIN' = 'ASSET') => {
+  const apiCall = useCallback(async (endpoint: string, options: RequestInit = {}, service: 'AUTH' | 'ASSET' | 'ADMIN' | 'AI' = 'ASSET') => {
     if (isDemo) {
       // Simulate network delay
       await new Promise(resolve => setTimeout(resolve, 600));
@@ -223,6 +226,9 @@ export default function AssetManagerApp() {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [isPublicUpload, setIsPublicUpload] = useState(false);
+  const [aiQuestion, setAiQuestion] = useState('');
+  const [aiAnswer, setAiAnswer] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
 
   // Form Inputs
   const usernameRef = useRef<HTMLInputElement>(null);
@@ -242,7 +248,29 @@ export default function AssetManagerApp() {
   // Helpers
   const showToast = (msg: string, type: 'success' | 'error') => setToast({ msg, type });
 
+  const handleAiChat = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!aiQuestion.trim()) return;
 
+    setIsAiLoading(true);
+    setAiAnswer('');
+    try {
+      if (isDemo) {
+        await new Promise(resolve => setTimeout(resolve, 700));
+        setAiAnswer('Demo mode: connect the local Ollama service to ask about assets.');
+      } else {
+        const response = await apiCall('/chat', {
+          method: 'POST',
+          body: JSON.stringify({ message: aiQuestion }),
+        }, 'AI') as { answer: string };
+        setAiAnswer(response.answer);
+      }
+    } catch (error: any) {
+      showToast(error.message || 'AI request failed', 'error');
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -746,6 +774,13 @@ export default function AssetManagerApp() {
             expanded={isSidebarOpen}
           />
           <SidebarItem
+            icon={<Bot size={20} />}
+            label="AI Assistant"
+            isActive={view === 'ai-assistant'}
+            onClick={() => setView('ai-assistant')}
+            expanded={isSidebarOpen}
+          />
+          <SidebarItem
             icon={<User size={20} />}
             label="My Profile"
             isActive={view === 'profile'}
@@ -803,6 +838,7 @@ export default function AssetManagerApp() {
               {view === 'public-assets' && 'Public Network'}
               {view === 'admin-console' && 'Admin Console'}
               {view === 'profile' && 'My Profile'}
+              {view === 'ai-assistant' && 'AI Assistant'}
             </h1>
           </div>
 
@@ -920,6 +956,49 @@ export default function AssetManagerApp() {
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+          ) : view === 'ai-assistant' ? (
+            <div className="max-w-3xl mx-auto">
+              <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+                <div className="px-6 py-5 border-b border-slate-100 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center">
+                    <Bot size={20} />
+                  </div>
+                  <div>
+                    <h2 className="font-semibold text-slate-800">Asset Assistant</h2>
+                    <p className="text-xs text-slate-500">Powered by local Ollama through MCP tools</p>
+                  </div>
+                </div>
+
+                <div className="p-6 space-y-4 min-h-64">
+                  {aiAnswer ? (
+                    <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-slate-700 whitespace-pre-wrap">
+                      {aiAnswer}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-slate-500 py-10 text-center">
+                      Ask about public assets or search uploaded asset metadata.
+                    </div>
+                  )}
+                </div>
+
+                <form onSubmit={handleAiChat} className="p-4 border-t border-slate-100 flex gap-3">
+                  <input
+                    value={aiQuestion}
+                    onChange={(event) => setAiQuestion(event.target.value)}
+                    placeholder="Ask about assets..."
+                    className="flex-1 px-4 py-3 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isAiLoading || !aiQuestion.trim()}
+                    className="px-4 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-lg flex items-center gap-2"
+                  >
+                    {isAiLoading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+                    <span>Ask</span>
+                  </button>
+                </form>
               </div>
             </div>
           ) : view === 'admin-console' ? (
